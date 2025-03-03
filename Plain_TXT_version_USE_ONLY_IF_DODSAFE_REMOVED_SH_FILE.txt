@@ -1,0 +1,650 @@
+#!/bin/bash
+
+# ****THE FOLLOWING SCRIPT MUST BE RUN WITH SUPER USER PRIVILEGES****
+# -------------------------
+# written by: CWT3 Moffett
+# -------------------------
+# created 11OCT2024
+# last update 26T24
+# -------------------------
+# the following script is intended to automate basic funtions of rule updates for deployed cdt teams.
+# -------------------------
+
+# sudo check
+if [ "$EUID" -ne 0 ]; then
+    echo "This script must be run with root privileges."
+    exit
+fi
+
+# global variables
+LOGFILE="log.log"
+i=0
+date=$(date +%Y-%m-%d-%R)
+type=""
+track=""
+count=""
+seconds=""
+multiplier=""
+num="[0-9]+"
+
+# Logging - all outputs (stdout and stderr) are logged to log.log LOGFILE="log.log"
+exec > >(tee -a "$LOGFILE") 2>&1
+echo "Logging started on $(date)"
+
+menu () {
+    # Main Menu
+    while true ;
+    do
+        PS3='Please select an option above: '
+        options=("Update ETPRO Rules." "Update Anomali Rules." "Update Both Rule Sets." "Remove Unnecessary Rules." "Editing Tool." "Quit.")
+        select opt in "${options[@]}"
+        do
+            case $opt in
+                "Update ETPRO Rules.")
+                    update_etpro
+                    so_update
+                    sleep 2
+                    break
+                    ;;
+                "Update Anomali Rules.")
+                    update_anomali
+                    so_update
+                    sleep 2
+                    break
+                    ;;
+                "Update Both Rule Sets.")
+                    update_etpro
+                    update_anomali
+                    so_update
+                    sleep 2
+                    break
+                    ;;
+                "Remove Unnecessary Rules.")
+                    remove_rule
+                    break
+                    ;;
+                "Editing Tool.")
+                    edit_tool
+                    break
+                    ;;
+                "Quit.")
+                    echo "Exiting..."
+                    sleep 1
+                    break 2
+                    ;;
+                * )
+                    echo "Please select a valid option."
+                    ;;
+            esac
+        done
+    done
+}
+
+update_etpro () {
+    # Update ETPRO Rules.
+    echo "Updating ETPRO Rules."
+    filepath="/tmp/etpro.rules.tar.gz"
+    if [ -f "$filepath" ]; then
+        echo "File found. Starting updates."
+        tar -xf /tmp/etpro.rules.tar.gz -C /tmp
+        cat /tmp/rules/*.rules > /nsm/repo/rules/emerging-all.rules
+    else
+        echo "File does not exist. (ETPRO Rules). Exiting to menu."
+        sleep 2
+        break 2
+    fi
+}
+
+update_anomali () {
+    # Update Anomali Rules.
+    echo "Updating Anomali Rules"
+    filepath=$(find /tmp -name "*DoD SAFE*.zip" -type f -print -quit 2>/dev/null)
+    if [ ! -f $filepath ]; then
+        echo "File not found (DoD SAFE zip). Exiting to menu."
+        sleep 2
+    else
+        echo "File found (DoD SAFE). Starting updates."
+        echo "Unpacking DoD SAFE zip file."
+        unzip "$filepath" -d /tmp/temp
+        echo "creating AllRules.txt file."
+        find /tmp/temp -name "*.txt" -exec cat {} + > /tmp/AllRules.txt
+        filepath2="/tmp/AllRules.txt"
+        if [ -f "$filepath2" ]; then
+            echo "Complete. Preparing for Rule updates."
+            cat /tmp/AllRules.txt >> /opt/so/rules/nids/local.rules
+            rm -rf "$filepath"
+        else
+            echo "File does not exist. (AllRules.txt). Exiting to menu."
+            sleep 2
+            break 2
+        fi
+    fi
+} 
+
+remove_rule () {
+    # Remove Unnecessary rules.
+    echo "Removing Unnecessary Rules."   
+    backup
+    while true ;
+    do
+        options=("Remove by SID." "Quit.")
+        select opt in "${options[@]}"
+        do
+            case $opt in
+                "Remove by SID.")
+                    read -p "Please type the rule SID/s you would like to remove. (For multiple seperate by ','): " sid
+                    regex="(^[0-9]{6}[0-9]+)(,[0-9]{6}[0-9]+){0,10}"
+                    if [[ "$sid" =~ $regex ]]; then
+                        echo "Formatting Awk script."
+                        format="awk '!/sid:($sid)/' /opt/so/rules/nids/all.rules > tempfile.txt && mv tempfile.txt /opt/so/rules/nids/all.rules"
+                        echo ${format//,/|} > /tmp/sid.txt
+                        echo "Running Awk Script. Clearing selected rules."
+                        bash /tmp/sid.txt
+                        echo "Awk Script complete. Clearing files from /tmp/ directory."
+                        rm -rf /tmp/sid.txt
+                        echo "Cleared temporary files. Resetting file permissions."
+                        chmod 777 /opt/so/rules/nids/all.rules
+                        echo "Complete. Type '2' to exit to main menu."
+                    else
+                        echo "Invalid entry. Input must be a rule SID."
+                        continue
+                    fi
+                    ;;
+                "Quit.")
+                    echo "Exiting to menu."
+                    sleep 2
+                    break 2
+                    ;;
+                * )
+                    echo "Please enter a valid response."
+                    ;;
+            esac
+        done
+    done
+}
+
+edit_tool () {
+    # editing tool
+    echo "Editing Tool."
+    backup
+    echo "------------------------------------------------------------------"
+    echo "The Editing Tool can be used for many functions in editing rules."
+    echo "------------------------------------------------------------------"
+    echo "Option 1 can be used to save a specific rule or rules to a text file for editing by hand."
+    echo "Option 2 can be used to add the saved rule back to the all.rules file."
+    echo "Option 3 can be used to generate a custom suricata threshold and save it to a text file."
+    echo "Option 4 can be used to generate a custom suricata threshold and automatically add it to the rule of your choice."
+    echo ""
+    while true ;
+    do
+        PS3='Please select an option above: '
+        options=("Save rule to file." "Implement saved rule file." "Threshold Generator." "Auto-Threshold." "Quit.")
+        select opt in "${options[@]}"
+        do
+            case $opt in
+                "Save rule to file.")
+                    save_rule
+                    echo "Type '5' to exit to main menu."
+                    ;;
+                "Implement saved rule file.")
+                    echo "Re-Implementing /tmp/saverule.txt"
+                    cat /tmp/saverule.txt >> /opt/so/rules/nids/all.rules
+                    echo "Complete. Type '5' to exit to main menu."
+                    ;;
+                "Threshold Generator.")
+                    threshold
+                    instructions
+                    echo "Complete. Type '5' to exit to main menu."
+                    ;;
+                "Auto-Threshold.")
+                    save_rule
+                    auto_check
+                    threshold
+                    threshold_awk
+                    echo "Complete. Type '5' to exit to main menu."
+                    ;;
+                "Quit.")
+                    echo "Exiting to menu."
+                    sleep 2
+                    break 2
+                    ;;
+                * )
+                    echo "Please enter a valid response."
+                    ;;
+            esac
+        done
+    done
+}
+
+save_rule () {
+    # save rule form all.rules to /tmp/saverule.txt file
+    read -p "Please type the rule SID/s you would like to remove. (For multiple seperate by ','): " sid
+    regex="(^[0-9]{6}[0-9]+)(,[0-9]{6}[0-9]+){0,10}"
+    if [[ "$sid" =~ $regex ]]; then
+        echo "Formatting Awk script."
+        format="awk '/sid:($sid)/' /opt/so/rules/nids/all.rules > /tmp/saverule.txt"
+        echo ${format//,/|} > /tmp/awk.txt
+        echo "Running Awk Script. Saving selected rules."
+        bash /tmp/awk.txt
+        script="awk '!/sid:($sid)/' /opt/so/rules/nids/all.rules > tempfile.txt && mv tempfile.txt /opt/so/rules/nids/all.rules"
+        echo ${script//,/|} > /tmp/sid.txt
+        bash /tmp/sid.txt
+        chmod 777 /opt/so/rules/nids/all.rules
+        echo "Awk Script complete. Clearing files from /tmp/ directory."
+        rm -rf /tmp/awk.txt
+        rm -rf /tmp/sid.txt
+        rm -rf tempfile.txt
+        echo "Cleared temporary files."
+        echo "The requested rule/s has been saved to /tmp/saverule.txt"
+    else
+        echo "Invalid entry. Input must be a rule SID."
+        continue
+    fi
+}
+
+auto_check () {
+    # check for previously implemented threshold
+    if grep -q "threshold:" "/tmp/saverule.txt"; then
+        echo "Previously implemented threshold found. Please use manual edit."
+        echo "Rule saved to /tmp/saverule.txt"
+        echo "Exiting..."
+        break
+    fi
+}
+
+threshold () {
+    # generate menu to select type of threshold (threshold,limit,both,backoff)
+    PS3="Please select the type of threshold you would like: "
+    options=("Threshold." "Limit." "Both." "Backoff.")
+    echo -e "The type of threshold determines the action to be taken by suricata handling the alert. The 4 types are listed below:\n---------------------------------------------------------------------------------------"
+    echo "Threshold - Sets a minimum number of alerts before one will be displayed."
+    echo "Limit - Sets a maximum amount of alerts that will be displayed."
+    echo "Both - Sets both a minimum and maximum number of alerts, combines Limit and Threshold."
+    echo "Backoff - Uses a backoff algorithm to reduce alerts displayed."
+    echo -e "---------------------------------------------------------------------------------------\nMore Information can be found in the Suricata documentation. https://docs.suricata.io/en/latest/rules/thresholding.html"
+    echo -e "---------------------------------------------------------------------------------------\n"
+    select opt in "${options[@]}"
+        do
+            case $opt in
+                "Threshold.")
+                    type="threshold"
+                    track
+                    count_sec
+                    return
+                    ;;
+                "Limit.")
+                    type="limit"
+                    track
+                    count_sec
+                    return
+                    ;;
+                "Both.")
+                    type="both"
+                    track
+                    count_sec
+                    return
+                    ;;
+                "Backoff.")
+                    type="backoff"
+                    track
+                    backoff
+                    return
+                    ;;
+                * )
+                    echo "Please select a valid option."
+                    return
+                    ;;
+            esac
+        done
+}
+
+track () {
+    # menu for track by (by_src,by_dst,by_rule,by_both,by_flow)
+    PS3="Please select the tracking you would like to use: "
+    options=("By Source." "By Destination." "By Rule." "By Both." "By Flow." )
+    echo -e "The track option determines how suricata will track the alerts for thresholding. The 5 types are listed below\n---------------------------------------------------------------------------------------"
+    echo "by_src - Thresholds alerts based on source."
+    echo "by_dst - Thresholds alerts based on destination."
+    echo "by_rule - Thresholds alerts based on rule."
+    echo "by_both - Thresholds alerts based on source and destination."
+    echo "by_flow - Thresholds alerts based on flow."
+    echo -e "---------------------------------------------------------------------------------------\nMore Information can be found in the Suricata documentation. https://docs.suricata.io/en/latest/rules/thresholding.html\n---------------------------------------------------------------------------------------\n"
+    select opt in "${options[@]}"
+        do
+            case $opt in
+                "By Source.")
+                    track="by_src"
+                    return
+                    ;;
+                "By Destination.")
+                    track="by_dst"
+                    return
+                    ;;
+                "By Rule.")
+                    track="by_rule"
+                    return
+                    ;;
+                "By Both.")
+                    track="by_both"
+                    return
+                    ;;
+                "By Flow.")
+                    track="by_flow"
+                    return
+                    ;;
+                * )
+                    echo "Please select a valid option."
+                    return
+                    ;;
+            esac
+        done
+}
+
+count_sec () {
+    # input for seconds and count (threshold,limit,both)
+    echo -e "Count sets the number of alerts to be used for the threshold. (min, max, starting point for backoff).\n---------------------------------------------------------------------------------------\nMore Information can be found in the Suricata documentation. https://docs.suricata.io/en/latest/rules/thresholding.html\n---------------------------------------------------------------------------------------\n"
+    read -p "Please enter a value for count: " count
+    if [[ "$count" =~ $num ]]; then
+    echo -e "Seconds sets the time frame to apply the threshold in seconds. (i.e. X alerts in Y seconds)\n---------------------------------------------------------------------------------------\nMore Information can be found in the Suricata documentation. https://docs.suricata.io/en/latest/rules/thresholding.html\n---------------------------------------------------------------------------------------\n"
+        read -p "Please enter a value for seconds: " seconds
+        if [[ "$seconds" =~ $num ]]; then
+            echo "threshold: type $type, track $track, count $count, seconds $seconds;" > /tmp/threshold.txt
+            return
+        else
+            echo "Input must be a numerical value. Please use valid input."
+            sleep 2
+            break 2
+        fi
+    else
+        echo "Input must be a numerical value. Please use valid input."
+        sleep 2
+        break 2
+    fi
+}
+
+backoff () {
+    # input for count and multiplier (backoff)
+    echo -e "Count sets the number of alerts to be used for the threshold. (min, max, starting point for backoff).\n---------------------------------------------------------------------------------------\nMore Information can be found in the Suricata documentation. https://docs.suricata.io/en/latest/rules/thresholding.html\n---------------------------------------------------------------------------------------\n"
+    read -p "Please enter a value for count: " count
+    if [[ "$count" =~ $num ]]; then
+        echo -e "Multiplier sets the multiple for backoff alerts to display. (i.e. count 1, multiplier 10, -> 1,10,100,1000,etc.)\n---------------------------------------------------------------------------------------\nMore Information can be found in the Suricata documentation. https://docs.suricata.io/en/latest/rules/thresholding.html\n---------------------------------------------------------------------------------------\n"
+        read -p "Please enter a value for multiplier: " multiplier
+        if [[ "$multiplier" =~ $num ]]; then
+            echo "threshold: type $type, track $track, count $count, multiplier $multiplier;" > /tmp/threshold.txt
+            return
+        else
+            echo "Input must be a numerical value. Please use valid input."
+            sleep 2
+            break 2
+        fi
+    else
+        echo "Input must be a numerical value. Please use valid input."
+        sleep 2
+        break 2
+    fi
+}
+
+instructions () {
+    # append a short instruction on how to apply threshold string to the bottom of the text file
+    echo -e "\n\n\nInstructions:\n-------------\nTo add the threshold to the desired rule, copy from this file and paste after the last "content" field in the rule.\nYou may use the Editing Tool to save your desired rule by SID to a text file for editing.\n" >> /tmp/threshold.txt
+    echo -e "To copy and paste the string from the command line use the following commands:\ncat /tmp/threshold.txt - highlight and ctrl+c to copy\nvim /tmp/saverule.txt - type 'i' to enter insert mode, move cursor to the desired location, right click to paste" >> /tmp/threshold.txt
+    echo "The threshold string has been saved to /tmp/threshold.txt"
+    echo "Instructions have been included to help you properly install your threshold."
+    sleep 2
+    break
+}
+
+threshold_awk () {
+    # call awk script to automatically insert threshold string
+    threshold_string=$(< /tmp/threshold.txt)
+    echo "Adding Auto-Threshold."
+    if [ -f "/tmp/ThresholdAwk.awk" ]; then
+        echo "Calling ThresholdAwk.awk script."
+    else
+        echo "Creating ThresholdAwk.awk script."
+        touch /tmp/ThresholdAwk.awk
+        echo '#!/usr/bin/awk -v threshold="$threshold_string" -f' > /tmp/ThresholdAwk.awk
+        echo '{' >> /tmp/ThresholdAwk.awk
+        echo '  if ($0 ~ /^alert/) {' >> /tmp/ThresholdAwk.awk
+        echo '      sub(/\)$/, " " threshold ")")' >> /tmp/ThresholdAwk.awk
+        echo '  }' >> /tmp/ThresholdAwk.awk
+        echo '  print' >> /tmp/ThresholdAwk.awk
+        echo '}' >> /tmp/ThresholdAwk.awk
+        echo "Complete. Updating file permissions."
+        chmod +x /tmp/ThresholdAwk.awk
+        echo "Complete. Calling ThresholdAwk.awk script."
+        sleep 2
+    fi
+    awk -v threshold="$threshold_string" -f /tmp/ThresholdAwk.awk /tmp/saverule.txt > /tmp/output.txt
+    echo "Complete. Re-implementing rule."
+    auto_add
+}
+
+auto_add () {
+    # reimplement rule from txt file to all.rules
+    cat /tmp/output.txt >> /opt/so/rules/nids/all.rules
+    echo "Complete. exiting to menu."
+    rm -rf /tmp/output.txt
+    sleep 2
+    break
+}
+
+so_update () {
+    # Run so-rule-update
+    echo "Running Rule Update..."
+    so-rule-update
+    echo "Update Complete. Saving rule file backup"
+    save_files
+    clear_files
+}
+
+backup () {
+    # create file backup of /opt/so/rules/nids/all.rules
+    if [ $i -ge 1 ]; then
+        echo "A backup has already been made during this session."
+        read -p "Would you like to make another? Y/N : " answer
+        case "$answer" in
+            [Yy] )
+                # create backup
+                ;;
+            [Nn] )
+                echo "Skipping backup."
+                return
+                ;;
+            * ) 
+                echo "Please enter a valid response."
+                return
+                ;;
+        esac
+    fi
+    if [ ! -d "/tmp/backup" ]; then
+        mkdir /tmp/backup
+        echo "Created /tmp/backup/ directory. Creating file backup."
+    else
+        echo "Creating file backup."
+    fi
+    cat /opt/so/rules/nids/all.rules > /tmp/backup/all.rules
+    rules="/tmp/backup/all.rules"
+    newfilename="${rules}_${date}"
+    mv $rules $newfilename
+    echo "A copy of the current /opt/so/rules/nids/all.rules file has been save to /tmp/backup/"
+    ((i++))
+}
+
+clear_files () {
+    # clear temporary files from /tmp/
+    echo "Complete. Clearing temporary files from /tmp/ directory."
+    files=("/tmp/rules" "/tmp/temp" "tempfile.txt")
+    for file in "${files[@]}";
+    do
+        if [ -e $file ]; then
+            rm -rf "$file"
+            echo "Cleared $file"
+        fi
+    done
+    echo "Complete. Returning to main menu."
+    return
+}
+
+save_files () {
+    # save raw alert files to /tmp/Updates/ for records
+    if [ ! -d "/tmp/updates" ]; then
+        mkdir /tmp/updates
+        echo "Created /tmp/updates/ directory. Creating file backup."
+    else
+        echo "Creating file backup."
+    fi
+    files=("/tmp/etpro.rules.tar.gz" "/tmp/AllRules.txt")
+    for file in "${files[@]}";
+    do
+        if [ -e $file ]; then
+            newfilename="${file}_${date}"
+            mv $file $newfilename
+            mv "$newfilename" "/tmp/updates/"
+            echo "Saved $file"
+        fi
+    done
+    echo "Used rules files can be found in the /tmp/updates directory for reference."
+    return
+}
+
+splash_screen () {
+    # display randomly selected ascii art when the script is run
+    clear
+    ascii_art=(
+    "
+    .------..------..------..------..------..------..------..------..------..------..------..------..------..------..------..------..------.
+    |N.--. ||C.--. ||D.--. ||T.--. ||_.--. ||R.--. ||U.--. ||L.--. ||E.--. ||_.--. ||M.--. ||A.--. ||N.--. ||A.--. ||G.--. ||E.--. ||R.--. |
+    | :(): || :/\: || :/\: || :/\: || :/\: || :(): || (\/) || :/\: || (\/) || :/\: || (\/) || (\/) || :(): || (\/) || :/\: || (\/) || :(): |
+    | ()() || :\/: || (__) || (__) || :\/: || ()() || :\/: || (__) || :\/: || :\/: || :\/: || :\/: || ()() || :\/: || :\/: || :\/: || ()() |
+    | '--'N|| '--'C|| '--'D|| '--'T|| '--'_|| '--'R|| '--'U|| '--'L|| '--'E|| '--'_|| '--'M|| '--'A|| '--'N|| '--'A|| '--'G|| '--'E|| '--'R|
+    \`------'\`------'\`------'\`------'\`------'\`------'\`------'\`------'\`------'\`------'\`------'\`------'\`------'\`------'\`------'\`------'\`------'
+
+    "
+    "
+     _  _     ___     ___    _____            ___              _                    __  __                            __ _                  
+    | \| |   / __|   |   \  |_   _|          | _ \   _  _     | |     ___          |  \/  |  __ _    _ _     __ _    / _\` |   ___      _ _  
+    | .\` |  | (__    | |) |   | |     ___    |   /  | +| |    | |    / -_)    ___  | |\/| | / _\` |  | ' \   / _\` |   \__, |  / -_)    | '_| 
+    |_|\_|   \___|   |___/   _|_|_   |___|   |_|_\   \_,_|   _|_|_   \___|   |___| |_|__|_| \__,_|  |_||_|  \__,_|   |___/   \___|   _|_|_  
+    _|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"|_|\"\"\"\"\"| 
+    \"\`-0-0-'\"\`-0-0-'\"\`-0-0-'\"\`-0-0-'\"\`-0-0-'\"\`-0-0-'\"\`-0-0-'\"\`-0-0-'\"\`-0-0-'\"\`-0-0-'\"\`-0-0-'\"\`-0-0-'\"\`-0-0-'\"\`-0-0-'\"\`-0-0-'\"\`-0-0-'\"\`-0-0-' 
+
+        CWT3 Moffett
+
+    "
+    "
+    .__   __.   ______  _______  .___________.     .______       __    __   __       _______     .___  ___.      ___      .__   __.      ___       _______  _______ .______      
+    |  \ |  |  /      ||       \ |           |     |   _  \     |  |  |  | |  |     |   ____|    |   \/   |     /   \     |  \ |  |     /   \     /  _____||   ____||   _  \     
+    |   \|  | |  ,----'|  .--.  |\`---|  |----\`     |  |_)  |    |  |  |  | |  |     |  |__       |  \  /  |    /  ^  \    |   \|  |    /  ^  \   |  |  __  |  |__   |  |_)  |    
+    |  . \`  | |  |     |  |  |  |    |  |          |      /     |  |  |  | |  |     |   __|      |  |\/|  |   /  /_\  \   |  . \`  |   /  /_\  \  |  | |_ | |   __|  |      /     
+    |  |\   | |  \`----.|  '--'  |    |  |          |  |\  \----.|  \`--'  | |  \`----.|  |____     |  |  |  |  /  _____  \  |  |\   |  /  _____  \ |  |__| | |  |____ |  |\  \----.
+    |__| \__|  \______||_______/     |__|     _____| _| \`._____| \______/  |_______||_______|____|__|  |__| /__/     \__\ |__| \__| /__/     \__\ \______| |_______|| _| \`._____|
+                                         |______|                                      |______|                                                                              
+
+        A long time ago on a deployment far, far away....
+    
+    "
+    "
+      _   _      ____  ____   _____    ____      _   _    _     U _____ u_ __  __      _      _   _       _       ____  U _____ u   ____     
+     | \ |\"|  U /\"___||  _\"\ |_ \" _|U |  _\"\ uU |\"|u| |  |\"|    \| ___\"|/U|' \/ '|uU  /\"\  u | \ |\"|  U  /\"\  uU /\"___|u\| ___\"|/U |  _\"\ u  
+    <|  \| |> \| | u /| | | |  | |   \| |_) |/ \| |\| |U | | u   |  _|\"  \| |\/| |/ \/ _ \/ <|  \| |>  \/ _ \/ \| |  _ / |  _|\"   \| |_) |/  
+    U| |\  |u  | |/__U| |_| |\/| |\   |  _ <    | |_| | \| |/__  | |___   | |  | |  / ___ \ U| |\  |u  / ___ \  | |_| |  | |___    |  _ <    
+     |_| \_|    \____||____/ u |_|U   |_| \_\  <<\___/   |_____| |_____|  |_|  |_| /_/   \_\ |_| \_|  /_/   \_\  \____|  |_____|   |_| \_\   
+     ||   \\\\,-._// \\\\  |||_  _// \\\\_  //   \\\\_(__) )(    //  \\\\  <<   >> <<,-,,-.   \\\\    >> ||   \\\\,-.\\\\    >>  _)(|_   <<   >>   //   \\\\_  
+     (_\")  (_/(__)(__)(__)_)(__) (__)(__)  (__)   (__)  (_\")(\"_)(__) (__) (./  \.) (__)  (__)(_\")  (_/(__)  (__)(__)__) (__) (__) (__)  (__)
+
+    "
+    "
+    __    __   ______   _______  ________      _______             __                   __       __                                                             
+    |  \\  |  \\ /      \\ |       \\|        \\    |       \\           |  \\                 |  \\     /  \\                                                            
+    | \$\$\\ | \$\$|  \$\$\$\$\$\$\\| \$\$\$\$\$\$\$\\\\\$\$\$\$\$\$\$\$    | \$\$\$\$\$\$\$\\ __    __ | \$\$  ______         | \$\$\\   /  \$\$  ______   _______    ______    ______    ______    ______  
+    | \$\$\$\\| \$\$| \$\$   \\\$\$| \$\$  | \$\$  | \$\$       | \$\$__| \$\$|  \\  |  \\| \$\$ /      \\        | \$\$\$\\ /  \$\$\$ |      \\ |       \\  |      \\  /      \\  /      \\  /      \\ 
+    | \$\$\$\$\\ \$\$| \$\$      | \$\$  | \$\$  | \$\$       | \$\$    \$\$| \$\$  | \$\$| \$\$|  \$\$\$\$\$\$\\       | \$\$\$\$\\  \$\$\$\$  \\\$\$\$\$\$\$\\| \$\$\$\$\$\$\$\\  \\\$\$\$\$\$\$\\|  \$\$\$\$\$\$\\|  \$\$\$\$\$\$\\|  \$\$\$\$\$\$\\
+    | \$\$\\\$\$ \$\$| \$\$   __ | \$\$  | \$\$  | \$\$       | \$\$\$\$\$\$\$\\| \$\$  | \$\$| \$\$| \$\$    \$\$       | \$\$\\\$\$ \$\$ \$\$ /      \$\$| \$\$  | \$\$ /      \$\$| \$\$  | \$\$| \$\$    \$\$| \$\$   \\\$\$
+    | \$\$ \\\$\$\$\$| \$\$__/  \\| \$\$__/ \$\$  | \$\$       | \$\$  | \$\$| \$\$__/ \$\$| \$\$| \$\$\$\$\$\$\$\$       | \$\$ \\\$\$\$| \$\$|  \$\$\$\$\$\$\$| \$\$  | \$\$|  \$\$\$\$\$\$\$| \$\$__| \$\$| \$\$\$\$\$\$\$\$| \$\$      
+    | \$\$  \\\$\$\$ \\\$\$    \$\$| \$\$    \$\$  | \$\$ ______| \$\$  | \$\$ \\\$\$    \$\$| \$\$ \\\$\$     \\ ______| \$\$  \\\$ | \$\$ \\\$\$    \$\$| \$\$  | \$\$ \\\$\$    \$\$ \\\$\$    \$\$ \\\$\$     \\| \$\$      
+    \\\$\$   \\\$\$  \\\$\$\$\$\$\$  \\\$\$\$\$\$\$\$    \\\$\$|      \\\\\$\$   \\\$\$  \\\$\$\$\$\$\$  \\\$\$  \\\$\$\$\$\$\$\$|      \\\\\$\$      \\\$\$  \\\$\$\$\$\$\$\$ \\\$\$   \\\$\$  \\\$\$\$\$\$\$\$ _\\\$\$\$\$\$\$\$  \\\$\$\$\$\$\$\$ \\\$\$      
+                                        \\\$\$\$\$\$\$                                  \\\$\$\$\$\$\$                                          |  \\__| \$\$                    
+                                                                                                                                    \\\$\$    \$\$                    
+                                                                                                                                    \\\$\$\$\$\$\$          
+
+            Is this where my BAS went???
+
+    "
+    "
+      ___           ___          _____                      ___           ___                         ___           ___           ___           ___           ___           ___           ___           ___     
+     /__/\         /  /\        /  /::\         ___        /  /\         /__/\                       /  /\         /__/\         /  /\         /__/\         /  /\         /  /\         /  /\         /  /\    
+     \  \:\       /  /:/       /  /:/\:\       /  /\      /  /::\        \  \:\                     /  /:/_       |  |::\       /  /::\        \  \:\       /  /::\       /  /:/_       /  /:/_       /  /::\   
+      \  \:\     /  /:/       /  /:/  \:\     /  /:/     /  /:/\:\        \  \:\    ___     ___    /  /:/ /\      |  |:|:\     /  /:/\:\        \  \:\     /  /:/\:\     /  /:/ /\     /  /:/ /\     /  /:/\:\  
+  _____\__\:\   /  /:/  ___  /__/:/ \__\:|   /  /:/     /  /:/~/:/    ___  \  \:\  /__/\   /  /\  /  /:/ /:/_   __|__|:|\:\   /  /:/~/::\   _____\__\:\   /  /:/~/::\   /  /:/_/::\   /  /:/ /:/_   /  /:/~/:/  
+ /__/::::::::\ /__/:/  /  /\ \  \:\ /  /:/  /  /::\    /__/:/ /:/___ /__/\  \__\:\ \  \:\ /  /:/ /__/:/ /:/ /\ /__/::::| \:\ /__/:/ /:/\:\ /__/::::::::\ /__/:/ /:/\:\ /__/:/__\/\:\ /__/:/ /:/ /\ /__/:/ /:/___
+ \  \:\~~\~~\/ \  \:\ /  /:/  \  \:\  /:/  /__/:/\:\   \  \:\/:::::/ \  \:\ /  /:/  \  \:\  /:/  \  \:\/:/ /:/ \  \:\~~\__\/ \  \:\/:/__\/ \  \:\~~\~~\/ \  \:\/:/__\/ \  \:\ /~~/:/ \  \:\/:/ /:/ \  \:\/:::::/
+  \  \:\  ~~~   \  \:\  /:/    \  \:\/:/   \__\/  \:\   \  \::/~~~~   \  \:\  /:/    \  \:\/:/    \  \::/ /:/   \  \:\        \  \::/       \  \:\  ~~~   \  \::/       \  \:\  /:/   \  \::/ /:/   \  \::/~~~~ 
+   \  \:\        \  \:\/:/      \  \::/         \  \:\   \  \:\        \  \:\/:/      \  \::/      \  \:\/:/     \  \:\        \  \:\        \  \:\        \  \:\        \  \:\/:/     \  \:\/:/     \  \:\     
+    \  \:\        \  \::/        \__\/           \__\/    \  \:\        \  \::/        \__\/        \  \::/       \  \:\        \  \:\        \  \:\        \  \:\        \  \::/       \  \::/       \  \:\    
+     \__\/         \__\/                                   \__\/         \__\/                       \__\/         \__\/         \__\/         \__\/         \__\/         \__\/         \__\/         \__\/    
+
+    "
+    "
+    ___   __    ______   ______   _________        ______    __  __   __       ______            ___ __ __   ________   ___   __    ________   _______    ______   ______       
+    /__/\\ /__/\\ /_____/\\ /_____/\\ /________/\\      /_____/\\  /_/\\/_/\\ /_/\\     /_____/\\          /__//_//_/\\ /_______/\\ /__/\\ /__/\\ /_______/\\ /______/\\  /_____/\\ /_____/\\      
+    \\::\\_\\\\  \\ \\\\:::__\\/ \\:::_ \\ \\\\__.::.__\\/      \\:::_ \\ \\ \\:\\ \\:\\ \\\\:\\ \\    \\::::_\\/_         \\::\\| \\| \\ \\\\::: _  \\ \\\\::\\_\\\\  \\ \\\\::: _  \\ \\\\::::__\\/__\\::::_\\/_\\:::_ \\ \\     
+    \\:. \`-\\  \\ \\\\:\\ \\  __\\:\\ \\ \\ \\  \\::\\ \\         \\:(_) ) )_\\:\\ \\:\\ \\\\:\\ \\    \\:\\/___/\\         \\:.      \\ \\\\::(_)  \\ \\\\:. \`-\\  \\ \\\\::(_)  \\ \\\\:\\ /____/\\\\:\\/___/\\\\:(_) ) )_   
+    \\:. _    \\ \\\\:\\ \\/_/\\\\:\\ \\ \\ \\  \\::\\ \\  _______\\: __ \`\\ \\\\:\\ \\:\\ \\\\:\\ \\____\\::___\\/_  _______\\:.\\-/\\  \\ \\\\:: __  \\ \\\\:. _    \\ \\\\:: __  \\ \\\\:\\\\_  _\\/ \\::___\\/_\\: __ \`\\ \\  
+    \\. \\\`-\\  \\ \\\\:\\_\\ \\ \\\\:\\/.:| |  \\::\\ \\/______/\\\\ \\ \`\\ \\ \\\\:\\_\\:\\ \\\\:\\/___/\\\\:\\____/\\/______/\\\\. \\  \\  \\ \\\\:.\\ \\  \\ \\\\. \\\`-\\  \\ \\\\:.\\ \\  \\ \\\\:\\_\\ \\ \\  \\:\\____/\\\\ \\ \`\\ \\ \\ 
+        \\__\\/ \\__\\/ \\_____\\/ \\____/_/   \\__\\/\\__::::\\/ \\_\\/ \\_\\/ \\_____\\/ \\_____\\/ \\_____\\/\\__::::\\/ \\__\\/ \\__\\/ \\__\\/\\__\\/ \\__\\/ \\__\\/ \\__\\/\\__\\/ \\_____\\/   \\_____\\/ \\_\\/ \\_\\/ 
+        
+    "
+    "
+    >==>    >=>     >=>    >====>     >===>>=====>        >======>               >=>                  >=>       >=>                                                               
+    >> >=>  >=>  >=>   >=> >=>   >=>       >=>            >=>    >=>             >=>                  >> >=>   >>=>                                                               
+    >=> >=> >=> >=>        >=>    >=>      >=>            >=>    >=>   >=>  >=>  >=>   >==>           >=> >=> > >=>    >=> >=>  >==>>==>     >=> >=>     >=>      >==>    >> >==> 
+    >=>  >=>>=> >=>        >=>    >=>      >=>            >> >==>      >=>  >=>  >=> >>   >=>         >=>  >=>  >=>  >=>   >=>   >=>  >=>  >=>   >=>   >=>  >=> >>   >=>   >=>    
+    >=>   > >=> >=>        >=>    >=>      >=>            >=>  >=>     >=>  >=>  >=> >>===>>=>        >=>   >>  >=> >=>    >=>   >=>  >=> >=>    >=>  >=>   >=> >>===>>=>  >=>    
+    >=>    >>=>  >=>   >=> >=>   >=>       >=>            >=>    >=>   >=>  >=>  >=> >>               >=>       >=>  >=>   >=>   >=>  >=>  >=>   >=>   >=>  >=> >>         >=>    
+    >=>     >=>    >===>   >====>          >=>            >=>      >=>   >==>=> >==>  >====>          >=>       >=>   >==>>>==> >==>  >=>   >==>>>==>      >=>   >====>   >==>    
+                                                >====>                                      >====>                                                   >=>                       
+        
+    "
+    "
+       _     _      _     _      _     _      _     _      _     _      _     _      _     _      _     _      _     _      _     _      _     _      _     _      _     _      _     _      _     _   
+      (c).-.(c)    (c).-.(c)    (c).-.(c)    (c).-.(c)    (c).-.(c)    (c).-.(c)    (c).-.(c)    (c).-.(c)    (c).-.(c)    (c).-.(c)    (c).-.(c)    (c).-.(c)    (c).-.(c)    (c).-.(c)    (c).-.(c)  
+       / ._. \      / ._. \      / ._. \      / ._. \      / ._. \      / ._. \      / ._. \      / ._. \      / ._. \      / ._. \      / ._. \      / ._. \      / ._. \      / ._. \      / ._. \   
+     __\( Y )/__  __\( Y )/__  __\( Y )/__  __\( Y )/__  __\( Y )/__  __\( Y )/__  __\( Y )/__  __\( Y )/__  __\( Y )/__  __\( Y )/__  __\( Y )/__  __\( Y )/__  __\( Y )/__  __\( Y )/__  __\( Y )/__ 
+    (_.-/'-'\-._)(_.-/'-'\-._)(_.-/'-'\-._)(_.-/'-'\-._)(_.-/'-'\-._)(_.-/'-'\-._)(_.-/'-'\-._)(_.-/'-'\-._)(_.-/'-'\-._)(_.-/'-'\-._)(_.-/'-'\-._)(_.-/'-'\-._)(_.-/'-'\-._)(_.-/'-'\-._)(_.-/'-'\-._)
+       || N ||      || C ||      || D ||      || T ||      || R ||      || U ||      || L ||      || E ||      || M ||      || A ||      || N ||      || A ||      || G ||      || E ||      || R ||   
+     _.' \`-' '._  _.' \`-' '._  _.' \`-' '._  _.' \`-' '._  _.' \`-' '._  _.' \`-' '._  _.' \`-' '._  _.' \`-' '._  _.' \`-' '._  _.' \`-' '._  _.' \`-' '._  _.' \`-' '._  _.' \`-' '._  _.' \`-' '._  _.' \`-' '._ 
+    (.-./\`-'\.-.)(.-./\`-'\.-.)(.-./\`-'\.-.)(.-./\`-'\.-.)(.-./\`-\`\.-.)(.-./\`-'\.-.)(.-./\`-'\.-.)(.-./\`-'\.-.)(.-./\`-'\.-.)(.-./\`-'\.-.)(.-./\`-'\.-.)(.-./\`-'\.-.)(.-./\`-'\.-.)(.-./\`-'\.-.)(.-./\`-\`\.-.)
+     \`-'     \`-'  \`-'     \`-'  \`-'     \`-'  \`-'     \`-'  \`-'     \`-'  \`-'     \`-'  \`-'     \`-'  \`-'     \`-'  \`-'     \`-'  \`-'     \`-'  \`-'     \`-'  \`-'     \`-'  \`-'     \`-'  \`-'     \`-'  \`-'     \`-' 
+     
+    "
+    "
+    ____ ____ ____ ____ ____ ____ ____ ____ ____ ____ ____ ____ ____ ____ ____ ____ ____ 
+    ||N |||C |||D |||T |||_ |||R |||u |||l |||e |||_ |||M |||a |||n |||a |||g |||e |||r ||
+    ||__|||__|||__|||__|||__|||__|||__|||__|||__|||__|||__|||__|||__|||__|||__|||__|||__||
+    |/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|
+
+    "
+    "
+    _____   _________________________ ________       ______          ______  ___                                         
+    ___  | / /_  ____/__  __ \__  __/ ___  __ \___  ____  /____      ___   |/  /_____ _____________ _______ _____________
+    __   |/ /_  /    __  / / /_  /    __  /_/ /  / / /_  /_  _ \     __  /|_/ /_  __ \`/_  __ \  __ \`/_  __ \`/  _ \_  ___/
+    _  /|  / / /___  _  /_/ /_  /     _  _, _// /_/ /_  / /  __/     _  /  / / / /_/ /_  / / / /_/ /_  /_/ //  __/  /    
+    /_/ |_/  \____/  /_____/ /_/______/_/ |_| \__,_/ /_/  \___/______/_/  /_/  \__,_/ /_/ /_/\__,_/ _\__, / \___//_/     
+                            _/_____/                       _/_____/                              /____/               
+
+        Faster than fast. Quicker than quick. I eat speed for breakfast.
+    
+    "
+    "
+    -. -.-. -.. -   .-. ..- .-.. .   -- .- -. .- --. . .-. 
+
+    "
+    )
+    num_art=${#ascii_art[@]}
+    random_index=$(shuf -i 0-$(($num_art - 1)) -n 1)
+    echo "${ascii_art[$random_index]}"
+}
+
+splash_screen
+menu
